@@ -1,0 +1,17 @@
+# Virtual environment
+.venv/
+
+# Data caches
+src/data/*.pkl
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
