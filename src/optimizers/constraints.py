@@ -85,7 +85,7 @@ class ConstraintSet:
         """
         n_min, n_max = min(bounds), max(bounds)
 
-        # N_eff >= n_min  =>  w'w <= 1/n_min
+        # N_eff >= n_min  =>  w'w <= 1 / n_min
         if n_min > 0:
             hhi_upper = 1.0 / n_min
             self.constraints.append({'type': 'ineq', 'fun': lambda w: hhi_upper - w @ w})
