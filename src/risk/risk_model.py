@@ -15,6 +15,7 @@ class EquityRiskModel:
         self.idio_risk = None
         self.expected_returns = None
         self.factor_residuals = None
+        self.periods_per_year = None
         self._factor_betas_cache = None
 
         if stock_covariance is not None:
@@ -33,6 +34,8 @@ class EquityRiskModel:
     def add_stock_covariance(self, stock_returns: pd.DataFrame, annualise: bool = True,
                              halflife: int = None):
         self._validate_stock_returns(stock_returns)
+        self.periods_per_year = self._infer_periods_per_year(stock_returns.index)
+
         if halflife is not None:
             ewm = stock_returns.ewm(halflife=halflife)
             last_date = stock_returns.index[-1]
@@ -43,21 +46,37 @@ class EquityRiskModel:
             self.expected_returns = self._calculate_expected_returns(stock_returns, annualise=False)
 
         if annualise:
-            self.stock_covariance *= 252
-            self.expected_returns *= 252
+            self.stock_covariance *= self.periods_per_year
+            self.expected_returns *= self.periods_per_year
 
         return self.stock_covariance
 
     def add_factor_covariance(self, factor_returns: pd.DataFrame, annualise: bool = True,
                               halflife: int = None):
+        if self.periods_per_year is None:
+            self.periods_per_year = self._infer_periods_per_year(factor_returns.index)
+
         if halflife is not None:
             last_date = factor_returns.index[-1]
             self.factor_covariance = factor_returns.ewm(halflife=halflife).cov().xs(last_date, level=0)
         else:
             self.factor_covariance = factor_returns.cov()
         if annualise:
-            self.factor_covariance *= 252
+            self.factor_covariance *= self.periods_per_year
         return self.factor_covariance
+
+    @staticmethod
+    def _infer_periods_per_year(index: pd.DatetimeIndex) -> int:
+        median_days = pd.Series(index.to_list()).diff().dt.days.median()
+        if median_days <= 2:
+            return 252    # daily / business daily
+        elif median_days <= 10:
+            return 52     # weekly
+        elif median_days <= 35:
+            return 12     # monthly
+        elif median_days <= 100:
+            return 4      # quarterly
+        return 1
 
     @staticmethod
     def _ewma_weights(T: int, halflife: int) -> np.ndarray:
@@ -162,11 +181,12 @@ class EquityRiskModel:
 
     def _calculate_idio_risk(self, idio_halflife: int = None) -> pd.Series:
         if self.factor_residuals is not None:
+            ppy = self.periods_per_year or self._infer_periods_per_year(self.factor_residuals.index)
             resid = self.factor_residuals.reindex(columns=self.tickers)
             if idio_halflife is not None:
-                idio_var = resid.ewm(halflife=idio_halflife).var().iloc[-1] * 252
+                idio_var = resid.ewm(halflife=idio_halflife).var().iloc[-1] * ppy
             else:
-                idio_var = resid.var() * 252
+                idio_var = resid.var() * ppy
             return pd.Series(
                 np.sqrt(np.maximum(idio_var.values, 0)),
                 index=self.tickers, name='idio_volatility'
@@ -184,7 +204,8 @@ class EquityRiskModel:
 
     def _calculate_expected_returns(self, stock_returns: pd.DataFrame, annualise: bool = True):
         self._validate_stock_returns(stock_returns)
-        return stock_returns.mean(axis=0) * 252 if annualise else stock_returns.mean(axis=0)
+        ppy = self.periods_per_year or self._infer_periods_per_year(stock_returns.index)
+        return stock_returns.mean(axis=0) * ppy if annualise else stock_returns.mean(axis=0)
 
     def add_idio_risk(self, idio_halflife: int = None) -> pd.Series:
         self.idio_risk = self._calculate_idio_risk(idio_halflife=idio_halflife)
@@ -228,4 +249,5 @@ class EquityRiskModel:
         if self.factor_exposure is not None:
             state.append('exposures')
         status = ', '.join(state) if state else 'uninitialised'
-        return f"EquityRiskModel({len(self.tickers)} tickers | {status})"
+        freq = f'{self.periods_per_year}p/yr' if self.periods_per_year else 'freq unknown'
+        return f"EquityRiskModel({len(self.tickers)} tickers | {freq} | {status})"
