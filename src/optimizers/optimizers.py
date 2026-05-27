@@ -61,6 +61,7 @@ class MaxDiversificationOptimizer(BaseOptimizer):
 class MaxFactorTiltOptimizer(BaseOptimizer):
     def __init__(self, risk_model, bm_weights, factor_name):
         super().__init__(risk_model, bm_weights)
+
         factor_names = risk_model.get_factor_betas().index.tolist()
         if factor_name not in factor_names:
             raise ValueError(f"Factor '{factor_name}' not in model. Available: {factor_names}")
@@ -69,13 +70,6 @@ class MaxFactorTiltOptimizer(BaseOptimizer):
 
     def objective(self, w, *args):
         return -float(self._tilt_betas @ w)
-
-    def get_performance_metrics(self, floor=0.001):
-        metrics = super().get_performance_metrics(floor=floor)
-        metrics['factor_tilt'] = float(self._tilt_betas @ self.weights)
-        if self._bm_w is not None:
-            metrics['bm_factor_exposure'] = float(self._tilt_betas @ self._bm_w)
-        return metrics
 
 class MinTurnoverOptimizer(BaseOptimizer):
     def objective(self, w, *args):

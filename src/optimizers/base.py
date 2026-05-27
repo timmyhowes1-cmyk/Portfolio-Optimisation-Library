@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Optional, Union
 from src import EquityRiskModel
+from .constraints import ConstraintSet
 from scipy.optimize import minimize
 import pandas as pd
 import numpy as np
@@ -23,9 +24,8 @@ class BaseOptimizer(ABC):
     def objective(self, w, *args):
         pass
 
-    def optimize(self, constraints: Optional[Union[list, 'ConstraintSet']] = None, long_only: bool = True, max_weight: float = 1.0, objective_args: tuple = ()):
-        from src.optimizers.constraints import ConstraintSet
-        w0 = np.ones(self.n_assets) / self.n_assets
+    def optimize(self, constraints: Optional[Union[list, ConstraintSet]] = None, long_only: bool = True, max_weight: float = 1.0, objective_args: tuple = ()):
+        w0 = np.ones(self.n_assets) / self.n_assets if self._bm_w is None else self._bm_w
 
         cs_lower, cs_upper = None, None
         if isinstance(constraints, ConstraintSet):
@@ -81,40 +81,14 @@ class BaseOptimizer(ABC):
     def portfolio_volatility(self, w):
         return np.sqrt(self.portfolio_variance(w))
 
-    def portfolio_tracking_error(self, w):
-        if self._bm_w is not None:
-            return self.portfolio_volatility(w - self._bm_w)
-        return None
-
-    def portfolio_turnover(self, w, relative_weights=None):
-        if relative_weights is None:
-            print("Benchmark weights used for turnover calculation...")
-            relative_weights = self._bm_w
-        return float(np.sum(np.abs(w - relative_weights))) / 2
+    def _metrics(self):
+        from src.performance import PortfolioMetrics
+        if self.weights is None:
+            raise ValueError("Must run optimize() first")
+        return PortfolioMetrics(self.risk_model, self.weights, self.bm_weights)
 
     def get_holdings(self, floor: float = 0.0) -> pd.DataFrame:
-        if self.weights is None:
-            raise ValueError("Must run optimize() first")
-        df = pd.DataFrame({
-            'weight': self.weights,
-            'bm_weight': self._bm_w if self._bm_w is not None else np.nan,
-        }, index=self.risk_model.tickers)
-        df['active_weight'] = df['weight'] - df['bm_weight']
-        return df[df['weight'] > floor].sort_values('weight', ascending=False)
+        return self._metrics().get_holdings(floor=floor)
 
-    def get_performance_metrics(self, floor:float=0.001):
-        if self.weights is None:
-            raise ValueError("Must run optimize() first")
-
-        w = self.weights
-        ret = self.portfolio_return(w)
-        vol = self.portfolio_volatility(w)
-
-        return {
-            'expected_return': ret,
-            'volatility': vol,
-            'tracking_error': self.portfolio_tracking_error(w),
-            'sharpe_ratio': ret / vol,
-            'num_positions': int(np.sum(w > floor)),
-            'n_eff_stocks': int(1 / np.sum(w ** 2))
-        }
+    def get_performance_metrics(self, floor: float = 0.0001) -> dict:
+        return self._metrics().get_performance_metrics(floor=floor)

@@ -1,5 +1,6 @@
-import pandas as pd
+import warnings
 import numpy as np
+import pandas as pd
 from typing import Union, Optional
 
 
@@ -21,17 +22,21 @@ class ConstraintSet:
         n_groups = len(group_mask.columns)
 
         if bm_weights is None and isinstance(tolerance, float) and tolerance * n_groups < 1:
-            print("Tolerance too small, not implementing constraint")
+            warnings.warn("Tolerance too small — constraint not added.", UserWarning)
             return self
 
+        if isinstance(tolerance, pd.DataFrame):
+            tolerance = tolerance.reindex(group_mask.columns).values
         tol = np.asarray(tolerance)
         if tol.ndim == 0:
             low_tol, high_tol = -float(tol), float(tol)
         elif tol.ndim == 1:
-            assert len(tol) == 2, "1-D tolerance must be [lower, upper]"
+            if len(tol) != 2:
+                raise ValueError("1-D tolerance must be [lower, upper].")
             low_tol, high_tol = tol.min(), tol.max()
         else:
-            assert tol.shape == (n_groups, 2), f"Per-group tolerance must have shape ({n_groups}, 2)"
+            if tol.shape != (n_groups, 2):
+                raise ValueError(f"Per-group tolerance must have shape ({n_groups}, 2).")
             low_tol, high_tol = tol.min(axis=1), tol.max(axis=1)
 
         mask = group_mask.values
@@ -49,10 +54,16 @@ class ConstraintSet:
         ])
         return self
 
-    def add_attribute_constraint(self, attribute: pd.Series, bm_weights: pd.Series,
-                                 bounds: Union[tuple, list, np.ndarray]):
-        attr_values = attribute.reindex(bm_weights.index).values
+    def add_attribute_constraint(self, attribute: pd.Series, bounds: Union[tuple, list, np.ndarray],
+                                 bm_weights: pd.Series = None):
+        index = bm_weights.index if bm_weights is not None else attribute.index
+        attr_values = attribute.reindex(index).values
         lower_bound, upper_bound = min(bounds), max(bounds)
+
+        if bm_weights is not None:
+            bm_attr = float(bm_weights.values @ attr_values)
+            lower_bound = bm_attr + lower_bound
+            upper_bound = bm_attr + upper_bound
 
         self.constraints.extend([
             {'type': 'ineq', 'fun': lambda w, a=attr_values: upper_bound - w @ a},
@@ -105,7 +116,8 @@ class ConstraintSet:
         Returns a vector constraint — one element per stock.
         """
         if isinstance(max_weight, pd.Series):
-            assert bm_weights is not None, "bm_weights required for alignment when max_weight is a Series"
+            if bm_weights is None:
+                raise ValueError("bm_weights required for alignment when max_weight is a Series.")
             ub = max_weight.reindex(bm_weights.index).values
         else:
             ub = float(max_weight)
@@ -146,6 +158,16 @@ class ConstraintSet:
             return max_te ** 2 - (float(b @ F @ b) + float(np.dot(active * active, idio_sq)))
 
         self.constraints.append({'type': 'ineq', 'fun': _te_constraint})
+        return self
+
+    def add_turnover_constraint(self, max_turnover: float, relative_weights: pd.Series):
+        ref = relative_weights.values
+
+        def _turnover_constraint(w):
+            diff = w - ref
+            return max_turnover - 0.5 * float(np.sum(np.sqrt(diff ** 2 + 1e-8)))
+
+        self.constraints.append({'type': 'ineq', 'fun': _turnover_constraint})
         return self
 
     def add_max_weight_multiple_constraint(self, bm_weights: pd.Series,
