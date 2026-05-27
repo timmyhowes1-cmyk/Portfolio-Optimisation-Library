@@ -125,6 +125,11 @@ class ConstraintSet:
         self.constraints.append({'type': 'ineq', 'fun': lambda w, cap=ub: cap - w})
         return self
 
+    def add_exclusions(self, exclude: list, bm_weights: pd.Series):
+        ub = np.where(bm_weights.index.isin(exclude), 0.0, np.inf)
+        self.upper_bounds = ub if self.upper_bounds is None else np.minimum(self.upper_bounds, ub)
+        return self
+
     def add_active_weight_constraint(self, bm_weights: pd.Series,
                                      bounds: Union[float, list, np.ndarray]):
         """Per-stock active weight bounds: lb <= w_i - bm_i <= ub.
