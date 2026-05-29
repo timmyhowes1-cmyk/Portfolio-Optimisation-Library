@@ -19,7 +19,7 @@ src/
 │   ├── ewma.py               # EWMA helpers: ewma_cov, ewma_mean, ewma_var, ewma_weights
 │   └── risk_model.py         # EquityRiskModel — EWMA covariance, WLS factor exposures, residual idio risk
 ├── optimizers/
-│   ├── slsqp_base.py         # BaseOptimizer (SLSQP) — non-convex objectives
+│   ├── slsqp_base.py         # SLSQPOptimizer — non-convex objectives
 │   ├── cvxpy_base.py         # CVXPYOptimizer — convex objectives via interior-point solver
 │   ├── optimizers.py         # Concrete optimiser subclasses
 │   └── constraints.py        # ConstraintSet — fluent constraint builder (SLSQP + CVXPY backends)

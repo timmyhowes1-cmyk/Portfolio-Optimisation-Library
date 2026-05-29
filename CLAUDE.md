@@ -41,7 +41,7 @@ All optimizers inherit from `PortfolioMath` (`src/_portfolio_math.py`), which ex
 
 Two concrete base classes:
 - **`CVXPYOptimizer`** (`cvxpy_base.py`) — uses CVXPY interior-point solver. Subclasses override `cvxpy_objective(self, w)`. Precomputes Cholesky form `F_sqrt_B` for SOCP. Used for all convex objectives.
-- **`BaseOptimizer`** (`slsqp_base.py`) — uses scipy SLSQP. Subclasses override `objective(self, w, *args)` and optionally `objective_gradient`. Used for non-convex objectives (MaxSharpe, MaxDiversification).
+- **`SLSQPOptimizer`** (`slsqp_base.py`) — uses scipy SLSQP. Subclasses override `objective(self, w, *args)` and optionally `objective_gradient`. Used for non-convex objectives (MaxSharpe, MaxDiversification).
 
 | Class | Base | Objective |
 |---|---|---|

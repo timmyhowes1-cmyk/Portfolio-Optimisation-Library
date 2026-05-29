@@ -195,17 +195,19 @@ class EquityRiskModel:
             index=self.tickers, name='idio_volatility'
         )
 
-    def _calculate_expected_returns(self, stock_returns: pd.DataFrame, annualise: bool = True):
+    def _calculate_expected_returns(self, stock_returns: pd.DataFrame, annualise: bool = True,
+                                    halflife: int = None):
         self._validate_stock_returns(stock_returns)
         ppy = self.periods_per_year or self._infer_periods_per_year(stock_returns.index)
-        return stock_returns.mean(axis=0) * ppy if annualise else stock_returns.mean(axis=0)
+        mu = ewma_mean(stock_returns, halflife) if halflife is not None else stock_returns.mean(axis=0)
+        return mu * ppy if annualise else mu
 
     def add_idio_risk(self, idio_halflife: int = None) -> pd.Series:
         self.idio_risk = self._calculate_idio_risk(idio_halflife=idio_halflife)
         return self.idio_risk
 
-    def add_expected_returns(self, stock_returns: pd.DataFrame) -> pd.Series:
-        self.expected_returns = self._calculate_expected_returns(stock_returns)
+    def add_expected_returns(self, stock_returns: pd.DataFrame, halflife: int = None) -> pd.Series:
+        self.expected_returns = self._calculate_expected_returns(stock_returns, halflife=halflife)
         return self.expected_returns
 
     def summary(self) -> pd.DataFrame:
