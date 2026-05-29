@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import cvxpy as cp
 
-from .slsqp_base import BaseOptimizer
+from .slsqp_base import SLSQPOptimizer
 from .cvxpy_base import CVXPYOptimizer
 
 
@@ -98,7 +98,7 @@ class MaxFactorTiltOptimizer(CVXPYOptimizer):
 
 # ── Non-convex optimizers (SLSQP) ────────────────────────────────────────────
 
-class MaxSharpeOptimizer(BaseOptimizer):
+class MaxSharpeOptimizer(SLSQPOptimizer):
     def objective(self, w, *args):
         risk_free_rate = args[0] if args else 0.0
         return -(self.portfolio_return(w) - risk_free_rate) / self.portfolio_volatility(w)
@@ -115,7 +115,7 @@ class MaxSharpeOptimizer(BaseOptimizer):
                                 objective_args=(risk_free_rate,), weight_floor=weight_floor)
 
 
-class MaxDiversificationOptimizer(BaseOptimizer):
+class MaxDiversificationOptimizer(SLSQPOptimizer):
     def __init__(self, risk_model, bm_weights):
         super().__init__(risk_model, bm_weights)
         self._asset_vols = np.sqrt(np.diag(risk_model.stock_covariance.values))  # (N,)
