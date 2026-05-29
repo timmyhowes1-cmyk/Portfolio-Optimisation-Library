@@ -5,10 +5,12 @@ from typing import Union, Optional
 
 
 class ConstraintSet:
-    def __init__(self, constraints: list = None):
-        self.constraints = constraints if constraints is not None else []
+    def __init__(self):
+        self.constraints: list = []
         self.lower_bounds: Optional[np.ndarray] = None
         self.upper_bounds: Optional[np.ndarray] = None
+        self._exclusion_mask: Optional[np.ndarray] = None
+        self._cvxpy_specs: list = []
 
     def __len__(self):
         return len(self.constraints)
@@ -18,7 +20,8 @@ class ConstraintSet:
 
     def add_grouping_constraint(self, grouping: pd.Series, bm_weights: pd.Series = None,
                                 tolerance: Union[float, list, np.ndarray] = 0.05):
-        group_mask = pd.get_dummies(grouping)
+        clean = grouping.replace('N/A', np.nan).dropna()
+        group_mask = pd.get_dummies(clean).reindex(grouping.index, fill_value=0)
         n_groups = len(group_mask.columns)
 
         if bm_weights is None and isinstance(tolerance, float) and tolerance * n_groups < 1:
@@ -40,6 +43,7 @@ class ConstraintSet:
             low_tol, high_tol = tol.min(axis=1), tol.max(axis=1)
 
         mask = group_mask.values
+        mask_T = mask.T
         if bm_weights is not None:
             bm = bm_weights.reindex(group_mask.index).fillna(0).values
             lower_bound = bm @ mask + low_tol
@@ -49,9 +53,10 @@ class ConstraintSet:
             upper_bound = high_tol
 
         self.constraints.extend([
-            {'type': 'ineq', 'fun': lambda w, m=mask: upper_bound - m.T @ w},
-            {'type': 'ineq', 'fun': lambda w, m=mask: m.T @ w - lower_bound},
+            {'type': 'ineq', 'fun': lambda w, m=mask: upper_bound - m.T @ w,   'jac': lambda w, mT=mask_T: -mT},
+            {'type': 'ineq', 'fun': lambda w, m=mask: m.T @ w - lower_bound,   'jac': lambda w, mT=mask_T:  mT},
         ])
+        self._cvxpy_specs.append({'type': 'grouping', 'mask_T': mask_T, 'lower_bound': lower_bound, 'upper_bound': upper_bound})
         return self
 
     def add_attribute_constraint(self, attribute: pd.Series, bounds: Union[tuple, list, np.ndarray],
@@ -65,10 +70,12 @@ class ConstraintSet:
             lower_bound = bm_attr + lower_bound
             upper_bound = bm_attr + upper_bound
 
+        neg_attr = -attr_values
         self.constraints.extend([
-            {'type': 'ineq', 'fun': lambda w, a=attr_values: upper_bound - w @ a},
-            {'type': 'ineq', 'fun': lambda w, a=attr_values: w @ a - lower_bound},
+            {'type': 'ineq', 'fun': lambda w, a=attr_values: upper_bound - w @ a, 'jac': lambda w, na=neg_attr: na},
+            {'type': 'ineq', 'fun': lambda w, a=attr_values: w @ a - lower_bound, 'jac': lambda w, a=attr_values: a},
         ])
+        self._cvxpy_specs.append({'type': 'attribute', 'attr': attr_values, 'lower_bound': lower_bound, 'upper_bound': upper_bound})
         return self
 
     def add_quadratic_constraint(self, Q: np.ndarray, bounds: Union[tuple, list, np.ndarray],
@@ -79,13 +86,18 @@ class ConstraintSet:
         c_arr = np.zeros(q_arr.shape[0]) if c is None else np.asarray(c)
 
         if upper_bound is not None:
-            self.constraints.append(
-                {'type': 'ineq', 'fun': lambda w, q=q_arr, cv=c_arr: upper_bound - (w @ q @ w + cv @ w + b)}
-            )
+            self.constraints.append({
+                'type': 'ineq',
+                'fun': lambda w, q=q_arr, cv=c_arr: upper_bound - (w @ q @ w + cv @ w + b),
+                'jac': lambda w, q=q_arr, cv=c_arr: -(2 * q @ w + cv),
+            })
         if lower_bound is not None:
-            self.constraints.append(
-                {'type': 'ineq', 'fun': lambda w, q=q_arr, cv=c_arr: (w @ q @ w + cv @ w + b) - lower_bound}
-            )
+            self.constraints.append({
+                'type': 'ineq',
+                'fun': lambda w, q=q_arr, cv=c_arr: (w @ q @ w + cv @ w + b) - lower_bound,
+                'jac': lambda w, q=q_arr, cv=c_arr:  (2 * q @ w + cv),
+            })
+        self._cvxpy_specs.append({'type': 'quadratic', 'Q': q_arr, 'c': c_arr, 'b': b, 'lower_bound': lower_bound, 'upper_bound': upper_bound})
         return self
 
     def add_effective_stocks_constraint(self, bounds: Union[tuple, list, np.ndarray]):
@@ -99,12 +111,13 @@ class ConstraintSet:
         # N_eff >= n_min  =>  w'w <= 1 / n_min
         if n_min > 0:
             hhi_upper = 1.0 / n_min
-            self.constraints.append({'type': 'ineq', 'fun': lambda w: hhi_upper - w @ w})
+            self.constraints.append({'type': 'ineq', 'fun': lambda w: hhi_upper - w @ w, 'jac': lambda w: -2 * w})
 
         # N_eff <= n_max  =>  w'w >= 1/n_max
         if np.isfinite(n_max):
             hhi_lower = 1.0 / n_max
-            self.constraints.append({'type': 'ineq', 'fun': lambda w: w @ w - hhi_lower})
+            self.constraints.append({'type': 'ineq', 'fun': lambda w: w @ w - hhi_lower, 'jac': lambda w:  2 * w})
+        self._cvxpy_specs.append({'type': 'effective_stocks', 'n_min': n_min, 'n_max': n_max})
         return self
 
     def add_max_weight_constraint(self, max_weight: Union[float, pd.Series],
@@ -122,12 +135,15 @@ class ConstraintSet:
         else:
             ub = float(max_weight)
 
-        self.constraints.append({'type': 'ineq', 'fun': lambda w, cap=ub: cap - w})
+        self.constraints.append({'type': 'ineq', 'fun': lambda w, cap=ub: cap - w, 'jac': lambda w: -np.eye(len(w))})
+        self._cvxpy_specs.append({'type': 'max_weight', 'ub': ub})
         return self
 
     def add_exclusions(self, exclude: list, bm_weights: pd.Series):
-        ub = np.where(bm_weights.index.isin(exclude), 0.0, np.inf)
-        self.upper_bounds = ub if self.upper_bounds is None else np.minimum(self.upper_bounds, ub)
+        self._exclusion_mask = np.array(bm_weights.index.isin(exclude))
+        mask = self._exclusion_mask
+        neg_mask = -mask.astype(float)
+        self.constraints.append({'type': 'ineq', 'fun': lambda w, m=mask: -np.sum(w[m]), 'jac': lambda w, nm=neg_mask: nm})
         return self
 
     def add_active_weight_constraint(self, bm_weights: pd.Series,
@@ -162,17 +178,25 @@ class ConstraintSet:
             b = B @ active
             return max_te ** 2 - (float(b @ F @ b) + float(np.dot(active * active, idio_sq)))
 
-        self.constraints.append({'type': 'ineq', 'fun': _te_constraint})
+        def _te_jac(w):
+            active = w - bm_w
+            return -2 * (B.T @ (F @ (B @ active)) + idio_sq * active)
+
+        self.constraints.append({'type': 'ineq', 'fun': _te_constraint, 'jac': _te_jac})
+        self._cvxpy_specs.append({'type': 'tracking_error', 'F_sqrt_B': np.linalg.cholesky(F).T @ B, 'idio': np.sqrt(idio_sq), 'bm_w': bm_w, 'max_te': max_te})
         return self
 
     def add_turnover_constraint(self, max_turnover: float, relative_weights: pd.Series):
         ref = relative_weights.values
 
         def _turnover_constraint(w):
-            diff = w - ref
-            return max_turnover - 0.5 * float(np.sum(np.sqrt(diff ** 2 + 1e-8)))
+            return max_turnover - 0.5 * float(np.sum(np.abs(w - ref)))
 
-        self.constraints.append({'type': 'ineq', 'fun': _turnover_constraint})
+        def _turnover_jac(w):
+            return -0.5 * np.sign(w - ref)
+
+        self.constraints.append({'type': 'ineq', 'fun': _turnover_constraint, 'jac': _turnover_jac})
+        self._cvxpy_specs.append({'type': 'turnover', 'ref': ref, 'max_turnover': max_turnover})
         return self
 
     def add_max_weight_multiple_constraint(self, bm_weights: pd.Series,
@@ -191,3 +215,40 @@ class ConstraintSet:
         new_upper = mult * bm_vals
         self.upper_bounds = new_upper if self.upper_bounds is None else np.minimum(self.upper_bounds, new_upper)
         return self
+
+    def to_cvxpy(self, w) -> list:
+        import cvxpy as cp
+        if self.constraints and not self._cvxpy_specs:
+            warnings.warn(
+                "This ConstraintSet was built with raw SLSQP dicts and has no CVXPY equivalents. "
+                "All constraints will be ignored by the CVXPY solver. Use the fluent add_*() methods.",
+                UserWarning,
+            )
+        constraints = []
+        for s in self._cvxpy_specs:
+            t = s['type']
+            if t == 'grouping':
+                constraints += [s['mask_T'] @ w <= s['upper_bound'], s['mask_T'] @ w >= s['lower_bound']]
+            elif t == 'attribute':
+                constraints += [s['attr'] @ w <= s['upper_bound'], s['attr'] @ w >= s['lower_bound']]
+            elif t == 'quadratic':
+                expr = cp.quad_form(w, s['Q']) + s['c'] @ w + s['b']
+                if s['upper_bound'] is not None:
+                    constraints.append(expr <= s['upper_bound'])
+                if s['lower_bound'] is not None:
+                    constraints.append(expr >= s['lower_bound'])
+            elif t == 'effective_stocks':
+                if s['n_min'] > 0:
+                    constraints.append(cp.sum_squares(w) <= 1.0 / s['n_min'])
+                if np.isfinite(s['n_max']):
+                    import warnings
+                    warnings.warn("Effective stocks upper bound (n_max) is non-convex and skipped in CVXPY mode.", UserWarning)
+            elif t == 'tracking_error':
+                active = w - s['bm_w']
+                te_sq = cp.sum_squares(s['F_sqrt_B'] @ active) + cp.sum_squares(cp.multiply(s['idio'], active))
+                constraints.append(te_sq <= s['max_te'] ** 2)
+            elif t == 'turnover':
+                constraints.append(cp.norm(w - s['ref'], 1) <= 2 * s['max_turnover'])
+            elif t == 'max_weight':
+                constraints.append(w <= s['ub'])
+        return constraints

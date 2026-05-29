@@ -9,3 +9,5 @@ from .optimizers import (
     MaxFactorTiltOptimizer,
 )
 from .constraints import ConstraintSet
+from .cvxpy_base import CVXPYOptimizer
+from .slsqp_base import BaseOptimizer

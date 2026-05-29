@@ -1,6 +1,7 @@
 import warnings
 import numpy as np
 import pandas as pd
+from .ewma import ewma_weights, ewma_weighted, ewma_cov, ewma_mean, ewma_var
 
 
 class EquityRiskModel:
@@ -37,10 +38,8 @@ class EquityRiskModel:
         self.periods_per_year = self._infer_periods_per_year(stock_returns.index)
 
         if halflife is not None:
-            ewm = stock_returns.ewm(halflife=halflife)
-            last_date = stock_returns.index[-1]
-            self.stock_covariance = ewm.cov().xs(last_date, level=0)
-            self.expected_returns = ewm.mean().iloc[-1]
+            self.stock_covariance = ewma_cov(stock_returns, halflife)
+            self.expected_returns = ewma_mean(stock_returns, halflife)
         else:
             self.stock_covariance = stock_returns.cov()
             self.expected_returns = self._calculate_expected_returns(stock_returns, annualise=False)
@@ -57,8 +56,7 @@ class EquityRiskModel:
             self.periods_per_year = self._infer_periods_per_year(factor_returns.index)
 
         if halflife is not None:
-            last_date = factor_returns.index[-1]
-            self.factor_covariance = factor_returns.ewm(halflife=halflife).cov().xs(last_date, level=0)
+            self.factor_covariance = ewma_cov(factor_returns, halflife)
         else:
             self.factor_covariance = factor_returns.cov()
         if annualise:
@@ -78,11 +76,6 @@ class EquityRiskModel:
             return 4      # quarterly
         return 1
 
-    @staticmethod
-    def _ewma_weights(T: int, halflife: int) -> np.ndarray:
-        alpha = 1 - np.exp(-np.log(2) / halflife)
-        w = (1 - alpha) ** np.arange(T - 1, -1, -1)  # oldest → newest
-        return w / w.sum()
 
     def add_factor_exposure(self, stock_returns: pd.DataFrame, factor_returns: pd.DataFrame,
                             min_observations: int = 60, halflife: int = None,
@@ -100,7 +93,7 @@ class EquityRiskModel:
         X = np.column_stack([np.ones(T), factor_returns.values])  # (T, K+1)
         Y = stock_returns.values                                   # (T, N)
 
-        ew = self._ewma_weights(T, halflife) if halflife is not None else None
+        ew = ewma_weights(T, halflife) if halflife is not None else None
 
         row_names = ['alpha', 'r_squared', 'n_obs'] + factor_names
         result = np.full((len(row_names), len(tickers)), np.nan)
@@ -184,7 +177,7 @@ class EquityRiskModel:
             ppy = self.periods_per_year or self._infer_periods_per_year(self.factor_residuals.index)
             resid = self.factor_residuals.reindex(columns=self.tickers)
             if idio_halflife is not None:
-                idio_var = resid.ewm(halflife=idio_halflife).var().iloc[-1] * ppy
+                idio_var = ewma_var(resid, idio_halflife) * ppy
             else:
                 idio_var = resid.var() * ppy
             return pd.Series(
